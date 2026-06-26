@@ -15,6 +15,10 @@ class LedgerRepository(private val ledgerDao: LedgerDao) {
         return ledgerDao.getClientById(clientId)
     }
 
+    suspend fun getClientByPhone(phone: String): Client? {
+        return ledgerDao.getClientByPhone(phone)
+    }
+
     fun getPaymentsForClient(clientId: Long): Flow<List<Payment>> {
         return ledgerDao.getPaymentsForClient(clientId)
     }

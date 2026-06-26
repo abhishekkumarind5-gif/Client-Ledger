@@ -25,6 +25,7 @@ import java.util.Locale
 sealed interface Screen {
     object Dashboard : Screen
     object ClientsList : Screen
+    object AddClient : Screen
     data class ClientProfile(val clientId: Long) : Screen
     data class AddTransaction(val initialClientId: Long? = null) : Screen
 }
@@ -177,6 +178,82 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // Navigate back to Dashboard or the client's profile
+            _uiState.value = _uiState.value.copy(isLoading = false)
+            navigateTo(Screen.ClientProfile(client.id))
+        }
+    }
+
+    /**
+     * Adds or updates a client with an initial opening balance.
+     * Implements smart duplicate detection and Room database offline persistence.
+     */
+    fun addClientWithBalance(
+        name: String,
+        phone: String,
+        email: String,
+        photoUri: Uri?,
+        accountHolder: String,
+        bankAccount: String,
+        upiId: String,
+        aadhaar: String,
+        initialBalance: Double,
+        context: Context
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true)
+
+            // Smart duplicate detection
+            val cleanPhone = phone.trim().replace(Regex("[^0-9+]"), "")
+            val existingClient = repository.getClientByPhone(cleanPhone)
+
+            val client = if (existingClient != null) {
+                // Client exists! Update details (smart merge)
+                val savedPath = photoUri?.let { uri ->
+                    FileUtil.saveImageToInternalStorage(context, uri)
+                } ?: existingClient.profilePhotoPath
+
+                val updatedClient = existingClient.copy(
+                    name = if (name.isNotBlank()) name.trim() else existingClient.name,
+                    email = if (email.isNotBlank()) email.trim() else existingClient.email,
+                    profilePhotoPath = savedPath,
+                    accountHolderName = if (accountHolder.isNotBlank()) accountHolder.trim() else existingClient.accountHolderName,
+                    bankAccountNumber = if (bankAccount.isNotBlank()) bankAccount.trim() else existingClient.bankAccountNumber,
+                    upiId = if (upiId.isNotBlank()) upiId.trim() else existingClient.upiId,
+                    aadhaarNumber = if (aadhaar.isNotBlank()) aadhaar.trim() else existingClient.aadhaarNumber
+                )
+                repository.updateClient(updatedClient)
+                updatedClient
+            } else {
+                // Register a new client
+                val savedPath = photoUri?.let { uri ->
+                    FileUtil.saveImageToInternalStorage(context, uri)
+                }
+                val newClient = Client(
+                    name = name.trim(),
+                    phoneNumber = cleanPhone,
+                    email = email.trim(),
+                    profilePhotoPath = savedPath,
+                    accountHolderName = accountHolder.trim(),
+                    bankAccountNumber = bankAccount.trim(),
+                    upiId = upiId.trim(),
+                    aadhaarNumber = aadhaar.trim()
+                )
+                val newId = repository.insertClient(newClient)
+                newClient.copy(id = newId)
+            }
+
+            // Record initial balance as an "Opening Balance" payment if greater than 0
+            if (initialBalance > 0.0) {
+                val payment = Payment(
+                    clientId = client.id,
+                    amount = initialBalance,
+                    serviceName = "Opening Balance",
+                    notes = "Initial balance registered upon profile creation."
+                )
+                repository.insertPayment(payment)
+            }
+
+            // Redirect to the newly created/updated client profile
             _uiState.value = _uiState.value.copy(isLoading = false)
             navigateTo(Screen.ClientProfile(client.id))
         }

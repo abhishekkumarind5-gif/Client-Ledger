@@ -87,6 +87,7 @@ fun LedgerApp(
                             is Screen.ClientsList -> "All Clients"
                             is Screen.ClientProfile -> "Client Profile"
                             is Screen.AddTransaction -> "Record Payment"
+                            is Screen.AddClient -> "Add New Client"
                         },
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -147,7 +148,7 @@ fun LedgerApp(
             }
         },
         floatingActionButton = {
-            if (currentScreen is Screen.Dashboard || currentScreen is Screen.ClientsList) {
+            if (currentScreen is Screen.Dashboard) {
                 FloatingActionButton(
                     onClick = { viewModel.navigateTo(Screen.AddTransaction()) },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -155,6 +156,15 @@ fun LedgerApp(
                     modifier = Modifier.testTag("add_transaction_fab")
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Add Transaction")
+                }
+            } else if (currentScreen is Screen.ClientsList) {
+                FloatingActionButton(
+                    onClick = { viewModel.navigateTo(Screen.AddClient) },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.testTag("add_client_fab")
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Client")
                 }
             }
         },
@@ -232,6 +242,26 @@ fun LedgerApp(
                                     serviceName = service,
                                     notes = notes,
                                     shouldSendWhatsApp = sendWhatsApp,
+                                    context = context
+                                )
+                            },
+                            onCancel = { viewModel.navigateBack() }
+                        )
+                    }
+                    is Screen.AddClient -> {
+                        AddClientScreen(
+                            allClients = uiState.clients,
+                            onSaveClient = { name, phone, email, photo, holder, bank, upi, aadhaar, balance ->
+                                viewModel.addClientWithBalance(
+                                    name = name,
+                                    phone = phone,
+                                    email = email,
+                                    photoUri = photo,
+                                    accountHolder = holder,
+                                    bankAccount = bank,
+                                    upiId = upi,
+                                    aadhaar = aadhaar,
+                                    initialBalance = balance,
                                     context = context
                                 )
                             },
@@ -1633,3 +1663,341 @@ private fun formatDate(timestamp: Long): String {
 // helper workaround to simplify mutableStateOf with Kotlin type-safe backing in Compose
 @Composable
 fun <T> rememberMutableStateOf(value: T) = remember { mutableStateOf(value) }
+
+// ==========================================
+// 5. ADD CLIENT SCREEN
+// ==========================================
+@Composable
+fun AddClientScreen(
+    allClients: List<Client>,
+    onSaveClient: (
+        name: String,
+        phone: String,
+        email: String,
+        photo: Uri?,
+        accountHolder: String,
+        bankAccount: String,
+        upiId: String,
+        aadhaar: String,
+        initialBalance: Double
+    ) -> Unit,
+    onCancel: () -> Unit
+) {
+    var clientName by remember { mutableStateOf("") }
+    var clientPhone by remember { mutableStateOf("") }
+    var clientEmail by remember { mutableStateOf("") }
+    var initialBalanceStr by remember { mutableStateOf("") }
+    
+    var accountHolderName by remember { mutableStateOf("") }
+    var bankAccountNumber by remember { mutableStateOf("") }
+    var upiId by remember { mutableStateOf("") }
+    var aadhaarNumber by remember { mutableStateOf("") }
+    var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    
+    // Smart duplicate/existing client matching state
+    var detectedExistingClient by remember { mutableStateOf<Client?>(null) }
+
+    val isFormValid = clientName.isNotBlank() && clientPhone.isNotBlank()
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedPhotoUri = uri
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp)
+    ) {
+        // Hero Image Picker
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clickable { imagePickerLauncher.launch("image/*") }
+                        .testTag("add_client_photo_picker"),
+                    contentAlignment = Alignment.BottomEnd
+                ) {
+                    if (selectedPhotoUri != null) {
+                        AsyncImage(
+                            model = selectedPhotoUri,
+                            contentDescription = "Selected profile photo",
+                            modifier = Modifier
+                                .size(110.dp)
+                                .clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(110.dp)
+                                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = "Add Profile Image",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(54.dp)
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit photo icon",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Section: Basic Info
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Basic Profile Details",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // Client Name input
+                    OutlinedTextField(
+                        value = clientName,
+                        onValueChange = { clientName = it },
+                        label = { Text("Client Full Name *") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_name_input")
+                    )
+
+                    // Client Phone input with Smart existing client matching
+                    OutlinedTextField(
+                        value = clientPhone,
+                        onValueChange = { input ->
+                            clientPhone = input
+                            // Run smart matching on phone input
+                            val cleanInput = input.trim().replace(Regex("[^0-9+]"), "")
+                            val matched = allClients.find { it.phoneNumber.replace(Regex("[^0-9+]"), "") == cleanInput }
+                            if (matched != null) {
+                                detectedExistingClient = matched
+                                // Autofill fields from existing client to allow smart updates!
+                                clientName = matched.name
+                                clientEmail = matched.email
+                                accountHolderName = matched.accountHolderName
+                                bankAccountNumber = matched.bankAccountNumber
+                                upiId = matched.upiId
+                                aadhaarNumber = matched.aadhaarNumber
+                            } else {
+                                detectedExistingClient = null
+                            }
+                        },
+                        label = { Text("Phone Number *") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_phone_input")
+                    )
+
+                    // Friendly Alert if Existing Client is Detected!
+                    if (detectedExistingClient != null) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Warning",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Client exists! Proceeding will update their profile and append the new balance.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+
+                    // Client Email input
+                    OutlinedTextField(
+                        value = clientEmail,
+                        onValueChange = { clientEmail = it },
+                        label = { Text("Email Address (Optional)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_email_input")
+                    )
+
+                    // Total / Initial Balance input
+                    OutlinedTextField(
+                        value = initialBalanceStr,
+                        onValueChange = { initialBalanceStr = it },
+                        label = { Text("Total Balance ($) (Optional)") },
+                        placeholder = { Text("e.g. 1500.00") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_client_balance_input")
+                    )
+                }
+            }
+        }
+
+        // Section: Banking Info (Optional)
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Banking & Identity Profile (Optional)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // Account Holder Name
+                    OutlinedTextField(
+                        value = accountHolderName,
+                        onValueChange = { accountHolderName = it },
+                        label = { Text("Account Holder Name") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_holder_name_input")
+                    )
+
+                    // Bank Account Number
+                    OutlinedTextField(
+                        value = bankAccountNumber,
+                        onValueChange = { bankAccountNumber = it },
+                        label = { Text("Bank Account Number") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_bank_account_input")
+                    )
+
+                    // UPI ID
+                    OutlinedTextField(
+                        value = upiId,
+                        onValueChange = { upiId = it },
+                        label = { Text("UPI ID") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("add_client_upi_id_input")
+                    )
+
+                    // Aadhaar Number
+                    OutlinedTextField(
+                        value = aadhaarNumber,
+                        onValueChange = { aadhaarNumber = it },
+                        label = { Text("Aadhaar Number (12-Digit)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_client_aadhaar_input")
+                    )
+                }
+            }
+        }
+
+        // Action Buttons
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(50.dp)
+                        .testTag("cancel_add_client_button")
+                ) {
+                    Text("Cancel")
+                }
+
+                Button(
+                    onClick = {
+                        val balance = initialBalanceStr.toDoubleOrNull() ?: 0.0
+                        onSaveClient(
+                            clientName,
+                            clientPhone,
+                            clientEmail,
+                            selectedPhotoUri,
+                            accountHolderName,
+                            bankAccountNumber,
+                            upiId,
+                            aadhaarNumber,
+                            balance
+                        )
+                    },
+                    enabled = isFormValid,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(50.dp)
+                        .testTag("submit_add_client_button")
+                ) {
+                    Text("Create Profile")
+                }
+            }
+        }
+    }
+}
