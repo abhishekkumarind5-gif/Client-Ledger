@@ -3,6 +3,8 @@ package com.example.ui.viewmodel
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.content.Intent
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.AppDatabase
@@ -14,6 +16,7 @@ import com.example.util.FileUtil
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -127,6 +130,10 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
         clientPhone: String,
         clientEmail: String,
         photoUri: Uri?,
+        accountHolderName: String,
+        bankAccountNumber: String,
+        upiId: String,
+        aadhaarNumber: String,
         amount: Double,
         serviceName: String,
         notes: String,
@@ -147,6 +154,10 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
                 clientPhone = clientPhone,
                 clientEmail = clientEmail,
                 clientPhotoPath = savedPath,
+                accountHolderName = accountHolderName,
+                bankAccountNumber = bankAccountNumber,
+                upiId = upiId,
+                aadhaarNumber = aadhaarNumber,
                 amount = amount,
                 serviceName = serviceName,
                 notes = notes
@@ -168,6 +179,49 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
             // Navigate back to Dashboard or the client's profile
             _uiState.value = _uiState.value.copy(isLoading = false)
             navigateTo(Screen.ClientProfile(client.id))
+        }
+    }
+
+    /**
+     * Updates an existing client's details directly (used by edit/pencil feature)
+     */
+    fun updateClientProfile(
+        clientId: Long,
+        name: String,
+        phone: String,
+        email: String,
+        accountHolderName: String,
+        bankAccountNumber: String,
+        upiId: String,
+        aadhaarNumber: String,
+        photoUri: Uri?,
+        context: Context
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true)
+
+            val currentClient = repository.getClientById(clientId)
+            if (currentClient != null) {
+                val savedPath = photoUri?.let { uri ->
+                    FileUtil.saveImageToInternalStorage(context, uri)
+                } ?: currentClient.profilePhotoPath
+
+                val updatedClient = currentClient.copy(
+                    name = name.trim(),
+                    phoneNumber = phone.trim(),
+                    email = email.trim(),
+                    profilePhotoPath = savedPath,
+                    accountHolderName = accountHolderName.trim(),
+                    bankAccountNumber = bankAccountNumber.trim(),
+                    upiId = upiId.trim(),
+                    aadhaarNumber = aadhaarNumber.trim()
+                )
+                repository.updateClient(updatedClient)
+                
+                // Refresh client profile state in UI
+                loadClientProfile(clientId)
+            }
+            _uiState.value = _uiState.value.copy(isLoading = false)
         }
     }
 
@@ -208,5 +262,78 @@ class LedgerViewModel(application: Application) : AndroidViewModel(application) 
             repository.deleteClient(client)
             navigateTo(Screen.Dashboard)
         }
+    }
+
+    /**
+     * Generates a CSV string of all client transactions, saves it to cache,
+     * and triggers a secure Android chooser sharing intent.
+     */
+    fun exportTransactionsToCsv(context: Context) {
+        viewModelScope.launch {
+            try {
+                val transactions = _uiState.value.recentTransactions
+                if (transactions.isEmpty()) {
+                    android.widget.Toast.makeText(context, "No transactions to export", android.widget.Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                // 1. Build CSV content
+                val csvHeader = "Transaction ID,Client Name,Phone,Service Name,Amount ($),Date,Notes\n"
+                val csvBody = StringBuilder()
+                val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+
+                for (tx in transactions) {
+                    val id = tx.paymentId
+                    val name = escapeCsv(tx.clientName)
+                    val phone = escapeCsv(tx.clientPhone)
+                    val service = escapeCsv(tx.serviceName)
+                    val amount = tx.amount
+                    val formattedDate = dateFormat.format(Date(tx.date))
+                    val notes = escapeCsv(tx.notes)
+
+                    csvBody.append("$id,$name,$phone,$service,$amount,$formattedDate,$notes\n")
+                }
+
+                val csvContent = csvHeader + csvBody.toString()
+
+                // 2. Write to a cache file
+                val exportDir = File(context.cacheDir, "exports")
+                if (!exportDir.exists()) {
+                    exportDir.mkdirs()
+                }
+                val file = File(exportDir, "client_ledger_export.csv")
+                file.writeText(csvContent)
+
+                // 3. Get Uri using FileProvider
+                val authority = "com.aistudio.clientledger.asqpn.fileprovider"
+                val contentUri: Uri = FileProvider.getUriForFile(context, authority, file)
+
+                // 4. Create and launch sharing intent
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                    putExtra(Intent.EXTRA_SUBJECT, "Client Ledger Transactions Export")
+                    putExtra(Intent.EXTRA_TEXT, "Here is the exported transaction ledger from Client Ledger App.")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+
+                val chooser = Intent.createChooser(shareIntent, "Export Ledger CSV").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(chooser)
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.widget.Toast.makeText(context, "Export failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun escapeCsv(value: String): String {
+        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
+            val escaped = value.replace("\"", "\"\"")
+            return "\"$escaped\""
+        }
+        return value
     }
 }

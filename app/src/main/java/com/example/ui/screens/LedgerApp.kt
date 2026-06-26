@@ -105,6 +105,19 @@ fun LedgerApp(
                         }
                     }
                 },
+                actions = {
+                    if (currentScreen is Screen.Dashboard) {
+                        IconButton(
+                            onClick = { viewModel.exportTransactionsToCsv(context) },
+                            modifier = Modifier.testTag("export_csv_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Export CSV"
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -177,7 +190,23 @@ fun LedgerApp(
                             client = client,
                             payments = payments,
                             onAddPaymentClick = { viewModel.navigateTo(Screen.AddTransaction(client?.id)) },
-                            onDeleteClientClick = { c -> viewModel.deleteClient(c) }
+                            onDeleteClientClick = { c -> viewModel.deleteClient(c) },
+                            onSaveProfile = { name, phone, email, holder, bank, upi, aadhaar, photo ->
+                                client?.let { c ->
+                                    viewModel.updateClientProfile(
+                                        clientId = c.id,
+                                        name = name,
+                                        phone = phone,
+                                        email = email,
+                                        accountHolderName = holder,
+                                        bankAccountNumber = bank,
+                                        upiId = upi,
+                                        aadhaarNumber = aadhaar,
+                                        photoUri = photo,
+                                        context = context
+                                    )
+                                }
+                            }
                         )
                     }
                     is Screen.AddTransaction -> {
@@ -188,12 +217,17 @@ fun LedgerApp(
                         
                         AddTransactionScreen(
                             initialClient = initialClient,
-                            onSaveTransaction = { name, phone, email, photo, amount, service, notes, sendWhatsApp ->
+                            allClients = allClients,
+                            onSaveTransaction = { name, phone, email, photo, holder, bank, upi, aadhaar, amount, service, notes, sendWhatsApp ->
                                 viewModel.addTransaction(
                                     clientName = name,
                                     clientPhone = phone,
                                     clientEmail = email,
                                     photoUri = photo,
+                                    accountHolderName = holder,
+                                    bankAccountNumber = bank,
+                                    upiId = upi,
+                                    aadhaarNumber = aadhaar,
                                     amount = amount,
                                     serviceName = service,
                                     notes = notes,
@@ -647,7 +681,8 @@ fun ClientProfileScreen(
     client: Client?,
     payments: List<Payment>,
     onAddPaymentClick: () -> Unit,
-    onDeleteClientClick: (Client) -> Unit
+    onDeleteClientClick: (Client) -> Unit,
+    onSaveProfile: (name: String, phone: String, email: String, holder: String, bank: String, upi: String, aadhaar: String, photo: Uri?) -> Unit
 ) {
     if (client == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -657,8 +692,28 @@ fun ClientProfileScreen(
     }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    val totalPaid = payments.sumOf { it.amount }
+    var isEditMode by remember { mutableStateOf(false) }
+
+    // State holding user edits
+    var nameInput by remember(client) { mutableStateOf(client.name) }
+    var phoneInput by remember(client) { mutableStateOf(client.phoneNumber) }
+    var emailInput by remember(client) { mutableStateOf(client.email) }
+    var accountHolderInput by remember(client) { mutableStateOf(client.accountHolderName) }
+    var bankAccountInput by remember(client) { mutableStateOf(client.bankAccountNumber) }
+    var upiIdInput by remember(client) { mutableStateOf(client.upiId) }
+    var aadhaarNumberInput by remember(client) { mutableStateOf(client.aadhaarNumber) }
+    var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
+
     val context = LocalContext.current
+    val totalPaid = payments.sumOf { it.amount }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedPhotoUri = uri
+        }
+    }
 
     if (showDeleteConfirm) {
         AlertDialog(
@@ -701,10 +756,22 @@ fun ClientProfileScreen(
             ) {
                 // Profile image launcher - Clickable area to view/change
                 Box(
-                    modifier = Modifier.size(100.dp),
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clickable(enabled = isEditMode) { imagePickerLauncher.launch("image/*") }
+                        .testTag("profile_photo_container"),
                     contentAlignment = Alignment.BottomEnd
                 ) {
-                    if (client.profilePhotoPath != null) {
+                    if (selectedPhotoUri != null) {
+                        AsyncImage(
+                            model = selectedPhotoUri,
+                            contentDescription = "Selected Photo",
+                            modifier = Modifier
+                                .size(100.dp)
+                                .clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else if (client.profilePhotoPath != null) {
                         AsyncImage(
                             model = File(client.profilePhotoPath),
                             contentDescription = "${client.name}'s photo",
@@ -729,16 +796,19 @@ fun ClientProfileScreen(
                         }
                     }
                     
-                    // Small decorative edit icon representation
+                    // Small edit icon indicator or dynamic action helper overlay
                     Box(
                         modifier = Modifier
                             .size(28.dp)
-                            .background(MaterialTheme.colorScheme.primary, CircleShape),
+                            .background(
+                                if (isEditMode) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                                CircleShape
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = "Profile Photo Active",
+                            imageVector = if (isEditMode) Icons.Default.Edit else Icons.Default.Person,
+                            contentDescription = "Profile Photo Edit Indicator",
                             tint = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier.size(16.dp)
                         )
@@ -747,49 +817,237 @@ fun ClientProfileScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Text(
-                    text = client.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center
-                )
+                if (!isEditMode) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = client.name,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        IconButton(
+                            onClick = { isEditMode = true },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("edit_profile_pencil_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit Profile",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("Client Full Name") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .testTag("edit_client_name_input")
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Quick Contact Buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${client.phoneNumber}"))
-                            context.startActivity(intent)
-                        }
+                if (!isEditMode) {
+                    // Quick Contact Buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Phone, contentDescription = "Call", tint = MaterialTheme.colorScheme.primary)
-                    }
-                    
-                    if (client.email.isNotEmpty()) {
                         IconButton(
                             onClick = {
-                                val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:${client.email}")
-                                }
+                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${client.phoneNumber}"))
                                 context.startActivity(intent)
                             }
                         ) {
-                            Icon(Icons.Default.Email, contentDescription = "Email", tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.Phone, contentDescription = "Call", tint = MaterialTheme.colorScheme.primary)
+                        }
+                        
+                        if (client.email.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    val intent = Intent(Intent.ACTION_SENDTO).apply {
+                                        data = Uri.parse("mailto:${client.email}")
+                                    }
+                                    context.startActivity(intent)
+                                }
+                            ) {
+                                Icon(Icons.Default.Email, contentDescription = "Email", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+
+                        IconButton(
+                            onClick = { showDeleteConfirm = true },
+                            modifier = Modifier.testTag("delete_client_button")
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Client", tint = MaterialTheme.colorScheme.error)
                         }
                     }
+                } else {
+                    OutlinedTextField(
+                        value = phoneInput,
+                        onValueChange = { phoneInput = it },
+                        label = { Text("Phone Number") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .testTag("edit_client_phone_input")
+                    )
+                    OutlinedTextField(
+                        value = emailInput,
+                        onValueChange = { emailInput = it },
+                        label = { Text("Email Address") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .testTag("edit_client_email_input")
+                    )
+                }
+            }
+        }
 
-                    IconButton(
-                        onClick = { showDeleteConfirm = true },
-                        modifier = Modifier.testTag("delete_client_button")
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete Client", tint = MaterialTheme.colorScheme.error)
+        // Expanded Profile: Banking & Extended Profile Fields
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Banking & Identity Profile",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    if (!isEditMode) {
+                        ProfileDetailRow(
+                            label = "Account Holder Name",
+                            value = client.accountHolderName.ifBlank { "Not Provided" }
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        
+                        ProfileDetailRow(
+                            label = "Bank Account Number",
+                            value = client.bankAccountNumber.ifBlank { "Not Provided" }
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        
+                        ProfileDetailRow(
+                            label = "UPI ID",
+                            value = client.upiId.ifBlank { "Not Provided" }
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        
+                        ProfileDetailRow(
+                            label = "Aadhaar Number",
+                            value = redactAadhaar(client.aadhaarNumber)
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = accountHolderInput,
+                            onValueChange = { accountHolderInput = it },
+                            label = { Text("Account Holder Name") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                                .testTag("edit_holder_name_input")
+                        )
+                        OutlinedTextField(
+                            value = bankAccountInput,
+                            onValueChange = { bankAccountInput = it },
+                            label = { Text("Bank Account Number") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                                .testTag("edit_bank_account_input")
+                        )
+                        OutlinedTextField(
+                            value = upiIdInput,
+                            onValueChange = { upiIdInput = it },
+                            label = { Text("UPI ID") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                                .testTag("edit_upi_id_input")
+                        )
+                        OutlinedTextField(
+                            value = aadhaarNumberInput,
+                            onValueChange = { aadhaarNumberInput = it },
+                            label = { Text("Aadhaar Number") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .testTag("edit_aadhaar_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    isEditMode = false
+                                    selectedPhotoUri = null
+                                    nameInput = client.name
+                                    phoneInput = client.phoneNumber
+                                    emailInput = client.email
+                                    accountHolderInput = client.accountHolderName
+                                    bankAccountInput = client.bankAccountNumber
+                                    upiIdInput = client.upiId
+                                    aadhaarNumberInput = client.aadhaarNumber
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Cancel")
+                            }
+
+                            Button(
+                                onClick = {
+                                    onSaveProfile(
+                                        nameInput,
+                                        phoneInput,
+                                        emailInput,
+                                        accountHolderInput,
+                                        bankAccountInput,
+                                        upiIdInput,
+                                        aadhaarNumberInput,
+                                        selectedPhotoUri
+                                    )
+                                    isEditMode = false
+                                },
+                                enabled = nameInput.isNotBlank() && phoneInput.isNotBlank(),
+                                modifier = Modifier.weight(1f).testTag("save_profile_button")
+                            ) {
+                                Text("Save")
+                            }
+                        }
                     }
                 }
             }
@@ -952,17 +1210,55 @@ fun ClientProfileScreen(
     }
 }
 
+@Composable
+fun ProfileDetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End
+        )
+    }
+}
+
+private fun redactAadhaar(aadhaar: String): String {
+    if (aadhaar.isBlank()) return "Not Provided"
+    val clean = aadhaar.trim().replace(Regex("\\s+"), "")
+    if (clean.length < 4) return "••••"
+    val last4 = clean.takeLast(4)
+    return "•••• •••• $last4"
+}
+
 // ==========================================
 // 4. RECORD TRANSACTION SCREEN
 // ==========================================
 @Composable
 fun AddTransactionScreen(
     initialClient: Client?,
+    allClients: List<Client>,
     onSaveTransaction: (
         name: String,
         phone: String,
         email: String,
         photo: Uri?,
+        accountHolder: String,
+        bankAccount: String,
+        upiId: String,
+        aadhaar: String,
         amount: Double,
         service: String,
         notes: String,
@@ -973,6 +1269,10 @@ fun AddTransactionScreen(
     var clientName by remember { mutableStateOf(initialClient?.name ?: "") }
     var clientPhone by remember { mutableStateOf(initialClient?.phoneNumber ?: "") }
     var clientEmail by remember { mutableStateOf(initialClient?.email ?: "") }
+    var accountHolderName by remember { mutableStateOf(initialClient?.accountHolderName ?: "") }
+    var bankAccountNumber by remember { mutableStateOf(initialClient?.bankAccountNumber ?: "") }
+    var upiId by remember { mutableStateOf(initialClient?.upiId ?: "") }
+    var aadhaarNumber by remember { mutableStateOf(initialClient?.aadhaarNumber ?: "") }
     var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
     
     var transactionAmount by remember { mutableStateOf("") }
@@ -1083,7 +1383,21 @@ fun AddTransactionScreen(
                     // Client Phone input
                     OutlinedTextField(
                         value = clientPhone,
-                        onValueChange = { if (!isClientLocked) clientPhone = it },
+                        onValueChange = {
+                            if (!isClientLocked) {
+                                clientPhone = it
+                                // Smart duplicate / existing client detection
+                                val matched = allClients.find { c -> c.phoneNumber.trim() == it.trim() }
+                                if (matched != null) {
+                                    clientName = matched.name
+                                    clientEmail = matched.email
+                                    accountHolderName = matched.accountHolderName
+                                    bankAccountNumber = matched.bankAccountNumber
+                                    upiId = matched.upiId
+                                    aadhaarNumber = matched.aadhaarNumber
+                                }
+                            }
+                        },
                         label = { Text("Phone Number") },
                         enabled = !isClientLocked,
                         singleLine = true,
@@ -1104,8 +1418,68 @@ fun AddTransactionScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(bottom = 12.dp)
                             .testTag("client_email_input")
                     )
+
+                    if (!isClientLocked) {
+                        Text(
+                            text = "Banking & Identity (Optional)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)
+                        )
+
+                        // Account Holder Name
+                        OutlinedTextField(
+                            value = accountHolderName,
+                            onValueChange = { accountHolderName = it },
+                            label = { Text("Account Holder Name") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .testTag("client_holder_name_input")
+                        )
+
+                        // Bank Account Number
+                        OutlinedTextField(
+                            value = bankAccountNumber,
+                            onValueChange = { bankAccountNumber = it },
+                            label = { Text("Bank Account Number") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .testTag("client_bank_account_input")
+                        )
+
+                        // UPI ID
+                        OutlinedTextField(
+                            value = upiId,
+                            onValueChange = { upiId = it },
+                            label = { Text("UPI ID") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .testTag("client_upi_id_input")
+                        )
+
+                        // Aadhaar Number
+                        OutlinedTextField(
+                            value = aadhaarNumber,
+                            onValueChange = { aadhaarNumber = it },
+                            label = { Text("Aadhaar Number") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("client_aadhaar_input")
+                        )
+                    }
                 }
             }
         }
@@ -1221,6 +1595,10 @@ fun AddTransactionScreen(
                             clientPhone,
                             clientEmail,
                             selectedPhotoUri,
+                            accountHolderName,
+                            bankAccountNumber,
+                            upiId,
+                            aadhaarNumber,
                             amount,
                             serviceName,
                             transactionNotes,

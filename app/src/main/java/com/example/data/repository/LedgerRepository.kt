@@ -42,13 +42,18 @@ class LedgerRepository(private val ledgerDao: LedgerDao) {
 
     /**
      * core business logic: detect if a client already exists by phone number.
-     * If they exist, add transaction to existing client. Otherwise, create new client and add transaction.
+     * If they exist, update their profile with the new fields (smart merge) and add transaction.
+     * Otherwise, create a new client with the extended profile and add transaction.
      */
     suspend fun recordTransaction(
         clientName: String,
         clientPhone: String,
         clientEmail: String,
         clientPhotoPath: String?,
+        accountHolderName: String,
+        bankAccountNumber: String,
+        upiId: String,
+        aadhaarNumber: String,
         amount: Double,
         serviceName: String,
         notes: String
@@ -57,14 +62,17 @@ class LedgerRepository(private val ledgerDao: LedgerDao) {
         val existingClient = ledgerDao.getClientByPhone(sanitizedPhone)
 
         val client = if (existingClient != null) {
-            // Client already exists! If photo is updated, update the client.
-            val updatedClient = if (clientPhotoPath != null && existingClient.profilePhotoPath == null) {
-                val c = existingClient.copy(profilePhotoPath = clientPhotoPath)
-                ledgerDao.updateClient(c)
-                c
-            } else {
-                existingClient
-            }
+            // Client already exists! Update their details with newly entered info if any.
+            val updatedClient = existingClient.copy(
+                name = if (clientName.isNotBlank()) clientName.trim() else existingClient.name,
+                email = if (clientEmail.isNotBlank()) clientEmail.trim() else existingClient.email,
+                profilePhotoPath = clientPhotoPath ?: existingClient.profilePhotoPath,
+                accountHolderName = if (accountHolderName.isNotBlank()) accountHolderName.trim() else existingClient.accountHolderName,
+                bankAccountNumber = if (bankAccountNumber.isNotBlank()) bankAccountNumber.trim() else existingClient.bankAccountNumber,
+                upiId = if (upiId.isNotBlank()) upiId.trim() else existingClient.upiId,
+                aadhaarNumber = if (aadhaarNumber.isNotBlank()) aadhaarNumber.trim() else existingClient.aadhaarNumber
+            )
+            ledgerDao.updateClient(updatedClient)
             updatedClient
         } else {
             // Client doesn't exist yet, create a new one!
@@ -72,7 +80,11 @@ class LedgerRepository(private val ledgerDao: LedgerDao) {
                 name = clientName.trim(),
                 phoneNumber = sanitizedPhone,
                 email = clientEmail.trim(),
-                profilePhotoPath = clientPhotoPath
+                profilePhotoPath = clientPhotoPath,
+                accountHolderName = accountHolderName.trim(),
+                bankAccountNumber = bankAccountNumber.trim(),
+                upiId = upiId.trim(),
+                aadhaarNumber = aadhaarNumber.trim()
             )
             val newId = ledgerDao.insertClient(newClient)
             newClient.copy(id = newId)

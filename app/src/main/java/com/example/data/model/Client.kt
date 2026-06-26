@@ -10,5 +10,9 @@ data class Client(
     val phoneNumber: String, // Unique identifier for duplicate detection
     val email: String = "",
     val profilePhotoPath: String? = null,
+    val accountHolderName: String = "",
+    val bankAccountNumber: String = "",
+    val upiId: String = "",
+    val aadhaarNumber: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
