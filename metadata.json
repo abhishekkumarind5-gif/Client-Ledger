@@ -1,0 +1,6 @@
+{
+  "name": "Client Ledger",
+  "description": "Offline-first client payment tracker and receipt sender with automatic WhatsApp redirect.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
